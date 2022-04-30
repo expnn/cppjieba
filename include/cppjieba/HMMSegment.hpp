@@ -10,12 +10,23 @@
 namespace cppjieba {
 class HMMSegment: public SegmentBase {
 public:
-    HMMSegment(const HMMModel* model)
+    explicit HMMSegment(const HMMModel* model)
         : model_(model) {
+        assert(model);
     }
-    ~HMMSegment() { }
 
-    virtual void Cut(RuneStrArray::const_iterator begin, RuneStrArray::const_iterator end, vector<WordRange>& res, bool,
+    Error Create(const HMMModel* model) {
+        if (nullptr == model) {
+            XLOG(ERROR) << "Got NULL HMMModel pointer ";
+            return Error::ValueError;
+        }
+        this->model_ = model;
+        return Error::Ok;
+    }
+
+    ~HMMSegment() override = default;
+
+    void Cut(RuneStrArray::const_iterator begin, RuneStrArray::const_iterator end, vector<WordRange>& res, bool,
                      size_t) const override {
         RuneStrArray::const_iterator left = begin;
         RuneStrArray::const_iterator right = begin;
@@ -58,8 +69,8 @@ public:
     }
 private:
     // sequential letters rule
-    RuneStrArray::const_iterator SequentialLetterRule(RuneStrArray::const_iterator begin,
-                                                      RuneStrArray::const_iterator end) const {
+    static RuneStrArray::const_iterator SequentialLetterRule(RuneStrArray::const_iterator begin,
+                                                      RuneStrArray::const_iterator end) {
         Rune x = begin->rune;
 
         if (('a' <= x && x <= 'z') || ('A' <= x && x <= 'Z')) {
@@ -81,7 +92,7 @@ private:
         return begin;
     }
     //
-    RuneStrArray::const_iterator NumbersRule(RuneStrArray::const_iterator begin, RuneStrArray::const_iterator end) const {
+    static RuneStrArray::const_iterator NumbersRule(RuneStrArray::const_iterator begin, RuneStrArray::const_iterator end) {
         Rune x = begin->rune;
 
         if ('0' <= x && x <= '9') {

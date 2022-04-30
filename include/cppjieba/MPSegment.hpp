@@ -7,21 +7,32 @@
 #include "DictTrie.hpp"
 #include "SegmentTagged.hpp"
 #include "PosTagger.hpp"
+#include "Error.hpp"
 
 namespace cppjieba {
 
 class MPSegment: public SegmentTagged {
 public:
-    MPSegment(const DictTrie* dictTrie)
+    explicit MPSegment(const DictTrie* dictTrie)
         : dictTrie_(dictTrie) {
         assert(dictTrie_);
     }
-    ~MPSegment() { }
 
-    virtual void Cut(RuneStrArray::const_iterator begin,
-                     RuneStrArray::const_iterator end,
-                     vector<WordRange>& words,
-                     bool, size_t max_word_len) const override {
+    Error Create(const DictTrie* dictTrie) {
+        if (nullptr == dictTrie) {
+            XLOG(ERROR) << "Got NULL DictTrie pointer ";
+            return Error::ValueError;
+        }
+        this->dictTrie_ = dictTrie;
+        return Error::Ok;
+    }
+
+    ~MPSegment() override = default;
+
+    void Cut(RuneStrArray::const_iterator begin,
+             RuneStrArray::const_iterator end,
+             vector<WordRange>& words,
+             bool, size_t max_word_len) const override {
         vector<DatDag> dags;
         dictTrie_->Find(begin, end, dags, max_word_len);
         CalcDP(dags);

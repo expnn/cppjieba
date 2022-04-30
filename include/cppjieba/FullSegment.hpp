@@ -11,15 +11,25 @@
 namespace cppjieba {
 class FullSegment: public SegmentBase {
 public:
-    FullSegment(const DictTrie* dictTrie)
+    explicit FullSegment(const DictTrie* dictTrie)
         : dictTrie_(dictTrie) {
         assert(dictTrie_);
     }
-    ~FullSegment() { }
 
-    virtual void Cut(RuneStrArray::const_iterator begin,
-                     RuneStrArray::const_iterator end,
-                     vector<WordRange>& res, bool, size_t) const override {
+    Error Create(const DictTrie* dictTrie) {
+        if (nullptr == dictTrie) {
+            XLOG(ERROR) << "Got NULL DictTrie pointer ";
+            return Error::ValueError;
+        }
+        this->dictTrie_ = dictTrie;
+        return Error::Ok;
+    }
+
+    ~FullSegment() override = default;
+
+    void Cut(RuneStrArray::const_iterator begin,
+             RuneStrArray::const_iterator end,
+             vector<WordRange>& res, bool, size_t) const override {
         assert(dictTrie_);
         vector<struct DatDag> dags;
         dictTrie_->Find(begin, end, dags);

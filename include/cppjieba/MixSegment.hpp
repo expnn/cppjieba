@@ -12,7 +12,22 @@ public:
     MixSegment(const DictTrie* dictTrie, const HMMModel* model)
         : mpSeg_(dictTrie), hmmSeg_(model) {
     }
-    ~MixSegment() = default;
+
+    Error Create(const DictTrie* dictTrie, const HMMModel* model) {
+        auto status = this->mpSeg_.Create(dictTrie);
+        if (Error::Ok != status) {
+            XLOG(ERROR) << "Failed to create mpSeg submodule";
+            return status;
+        }
+        status = this->hmmSeg_.Create(model);
+        if (Error::Ok != status) {
+            XLOG(ERROR) << "Failed to create hmmSeg_ submodule";
+            return status;
+        }
+        return Error::Ok;
+    }
+
+    ~MixSegment() override = default;
 
     virtual void Cut(RuneStrArray::const_iterator begin, RuneStrArray::const_iterator end, vector<WordRange>& res, bool hmm,
                      size_t) const override {
