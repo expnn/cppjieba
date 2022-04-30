@@ -287,6 +287,9 @@ inline Error CalcFileListMD5(const vector<string>& files, size_t& file_size_sum,
     file_size_sum = 0;
 
     for (auto const & local_path : files) {
+        if (local_path.empty()) {
+            continue;
+        }
         const int fd = ::open(local_path.c_str(), O_RDONLY);
         if (fd < 0) {
             XLOG(ERROR) << "failed to open " << local_path;
