@@ -15,3 +15,8 @@ tmp
 t.*
 *.pid
 build
+
+/.idea/
+/cmake-build-debug/
+/cmake-build-release/
+/dict/jieba.dict.utf8.cad346b82a217a06f2713f6efba49e04.1.dat_cache

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "limonp/StringUtil.hpp"
+#include "Error.hpp"
+#include <cerrno>
 
 namespace cppjieba {
 
@@ -15,6 +17,10 @@ struct HMMModel {
     enum {B = 0, E = 1, M = 2, S = 3, STATUS_SUM = 4};
 
     HMMModel(const string& modelPath) {
+        Create(modelPath);
+    }
+
+    Error Create(const string& modelPath) {
         memset(startProb, 0, sizeof(startProb));
         memset(transProb, 0, sizeof(transProb));
         statMap[0] = 'B';
@@ -25,56 +31,117 @@ struct HMMModel {
         emitProbVec.push_back(&emitProbE);
         emitProbVec.push_back(&emitProbM);
         emitProbVec.push_back(&emitProbS);
-        LoadModel(modelPath);
+        auto status = LoadModel(modelPath);
+        if (status != Error::Ok) {
+            XLOG(ERROR)  << "create HMM model failed. Model path: " << modelPath;
+            return status;
+        }
+        return Error::Ok;
     }
 
     ~HMMModel() = default;
 
-    void LoadModel(const string& filePath) {
+    Error LoadModel(const string& filePath) {
         ifstream ifile(filePath.c_str());
-        XCHECK(ifile.is_open()) << "open " << filePath << " failed";
+        if (!ifile.is_open()) {
+            XLOG(ERROR)  << "open " << filePath << " failed";
+            return Error::OpenFileFailed;
+        }
+
         string line;
         vector<string> tmp;
         vector<string> tmp2;
         //Load startProb
-        XCHECK(GetLine(ifile, line));
-        Split(line, tmp, " ");
-        XCHECK(tmp.size() == STATUS_SUM);
+        if (!GetLine(ifile, line)) {
+            XLOG(ERROR) << "read a line from " << filePath << " FAILED";
+            return Error::FileOperationError;
+        }
 
-        for (size_t j = 0; j < tmp.size(); j++) {
-            startProb[j] = atof(tmp[j].c_str());
+        Split(line, tmp, " ");
+        if (tmp.size() != STATUS_SUM) {
+            XLOG(ERROR) << "parse line failed: expecting " << STATUS_SUM << " columns, got "<< tmp.size();
+            return Error::ValueError;
+        }
+
+        for (size_t j = 0; j < STATUS_SUM; j++) {
+            // startProb[j] = atof(tmp[j].c_str());
+            // 检查解析是否正确？
+            startProb[j] = stod(tmp[j], nullptr);
+            if (errno == ERANGE) {
+                XLOG(ERROR) << "failed to parse: " << tmp[j] << " to double: out of range";
+                return Error::ValueError;
+            }
         }
 
         //Load transProb
-        for (size_t i = 0; i < STATUS_SUM; i++) {
-            XCHECK(GetLine(ifile, line));
-            Split(line, tmp, " ");
-            XCHECK(tmp.size() == STATUS_SUM);
+        for (auto & i : transProb) {
+            if(!GetLine(ifile, line)) {
+                XLOG(ERROR) << "read a line from " << filePath << " FAILED";
+                return Error::FileOperationError;
+            }
 
-            for (size_t j = 0; j < tmp.size(); j++) {
-                transProb[i][j] = atof(tmp[j].c_str());
+            Split(line, tmp, " ");
+            if (tmp.size() != STATUS_SUM) {
+                XLOG(ERROR) << "parse line failed: expecting " << STATUS_SUM << " columns, got "<< tmp.size();
+                return Error::ValueError;
+            }
+
+            for (int j = 0; j < STATUS_SUM; j++) {
+                // i[j] = atof(tmp[j].c_str());
+                i[j] = stod(tmp[j], nullptr);
+                if (errno == ERANGE) {
+                    XLOG(ERROR) << "failed to parse: " << tmp[j] << " to double: out of range";
+                    return Error::ValueError;
+                }
             }
         }
 
         //Load emitProbB
-        XCHECK(GetLine(ifile, line));
-        XCHECK(LoadEmitProb(line, emitProbB));
+        if (!GetLine(ifile, line)) {
+            XLOG(ERROR) << "read a line from " << filePath << " FAILED";
+            return Error::FileOperationError;
+        }
+        if (!LoadEmitProb(line, emitProbB)) {
+            XLOG(ERROR) << "load emitProbB from line '" << line << "' FAILED";
+            return Error::ValueError;
+        }
 
         //Load emitProbE
-        XCHECK(GetLine(ifile, line));
-        XCHECK(LoadEmitProb(line, emitProbE));
+        if (!GetLine(ifile, line)) {
+            XLOG(ERROR) << "read a line from " << filePath << " FAILED";
+            return Error::FileOperationError;
+        }
+        if (!LoadEmitProb(line, emitProbE)) {
+            XLOG(ERROR) << "load emitProbE from line '" << line << "' FAILED";
+            return Error::ValueError;
+        }
 
         //Load emitProbM
-        XCHECK(GetLine(ifile, line));
-        XCHECK(LoadEmitProb(line, emitProbM));
+        if (!GetLine(ifile, line)) {
+            XLOG(ERROR) << "read a line from " << filePath << " FAILED";
+            return Error::FileOperationError;
+        }
+        if (!LoadEmitProb(line, emitProbM)){
+            XLOG(ERROR) << "load emitProbM from line '" << line << "' FAILED";
+            return Error::ValueError;
+        }
 
         //Load emitProbS
-        XCHECK(GetLine(ifile, line));
-        XCHECK(LoadEmitProb(line, emitProbS));
+        if (!GetLine(ifile, line)) {
+            XLOG(ERROR) << "read a line from " << filePath << " FAILED";
+            return Error::FileOperationError;
+        }
+        if (!LoadEmitProb(line, emitProbS)) {
+            XLOG(ERROR) << "load emitProbS from line '" << line << "' FAILED";
+            return Error::ValueError;
+        }
+
+        return Error::Ok;
     }
-    double GetEmitProb(const EmitProbMap* ptMp, Rune key,
-                       double defVal)const {
-        EmitProbMap::const_iterator cit = ptMp->find(key);
+
+    static double GetEmitProb(const EmitProbMap* ptMp, Rune key,
+                       double defVal) {
+        auto cit = ptMp->find(key);
 
         if (cit == ptMp->end()) {
             return defVal;
@@ -82,7 +149,8 @@ struct HMMModel {
 
         return cit->second;
     }
-    bool GetLine(ifstream& ifile, string& line) {
+
+    static bool GetLine(ifstream& ifile, string& line) {
         while (getline(ifile, line)) {
             Trim(line);
 
@@ -99,7 +167,8 @@ struct HMMModel {
 
         return false;
     }
-    bool LoadEmitProb(const string& line, EmitProbMap& mp) {
+
+    static bool LoadEmitProb(const string& line, EmitProbMap& mp) {
         if (line.empty()) {
             return false;
         }
@@ -108,8 +177,8 @@ struct HMMModel {
         RuneArray unicode;
         Split(line, tmp, ",");
 
-        for (size_t i = 0; i < tmp.size(); i++) {
-            Split(tmp[i], tmp2, ":");
+        for (auto & i : tmp) {
+            Split(i, tmp2, ":");
 
             if (2 != tmp2.size()) {
                 XLOG(ERROR) << "emitProb illegal.";
@@ -121,7 +190,11 @@ struct HMMModel {
                 return false;
             }
 
-            mp[unicode[0]] = atof(tmp2[1].c_str());
+            mp[unicode[0]] = stod(tmp2[1], nullptr);
+            if (errno == ERANGE) {
+                XLOG(ERROR) << "parse double from " << tmp2[1] << "failed. ";
+                return false;
+            }
         }
 
         return true;
