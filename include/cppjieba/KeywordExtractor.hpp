@@ -26,15 +26,32 @@ public:
         LoadIdfDict(idfPath);
         LoadStopWordDict(stopWordPath);
     }
-    ~KeywordExtractor() {
+
+    Error Create(const DictTrie* dictTrie,
+                 const HMMModel* model,
+                 const string& idfPath,
+                 const string& stopWordPath) {
+        this->segment_.Create(dictTrie, model);
+        auto status = LoadIdfDict(idfPath);
+        if (Error::Ok != status) {
+            XLOG(ERROR) << "failed to load IDF dict";
+            return status;
+        }
+        status = LoadStopWordDict(stopWordPath);
+        if (Error::Ok != status) {
+            XLOG(ERROR) << "failed to load stop words dict";
+            return status;
+        }
     }
+
+    ~KeywordExtractor() = default;
 
     void Extract(const string& sentence, vector<string>& keywords, size_t topN) const {
         vector<Word> topWords;
         Extract(sentence, topWords, topN);
 
-        for (size_t i = 0; i < topWords.size(); i++) {
-            keywords.push_back(topWords[i].word);
+        for (auto & topWord : topWords) {
+            keywords.push_back(topWord.word);
         }
     }
 
@@ -42,8 +59,8 @@ public:
         vector<Word> topWords;
         Extract(sentence, topWords, topN);
 
-        for (size_t i = 0; i < topWords.size(); i++) {
-            keywords.push_back(pair<string, double>(topWords[i].word, topWords[i].weight));
+        for (auto & topWord : topWords) {
+            keywords.emplace_back(topWord.word, topWord.weight);
         }
     }
 
@@ -54,16 +71,16 @@ public:
         map<string, Word> wordmap;
         size_t offset = 0;
 
-        for (size_t i = 0; i < words.size(); ++i) {
+        for (auto & word : words) {
             size_t t = offset;
-            offset += words[i].size();
+            offset += word.size();
 
-            if (IsSingleWord(words[i]) || stopWords_.find(words[i]) != stopWords_.end()) {
+            if (IsSingleWord(word) || stopWords_.find(word) != stopWords_.end()) {
                 continue;
             }
 
-            wordmap[words[i]].offsets.push_back(t);
-            wordmap[words[i]].weight += 1.0;
+            wordmap[word].offsets.push_back(t);
+            wordmap[word].weight += 1.0;
         }
 
         if (offset != sentence.size()) {
@@ -74,17 +91,17 @@ public:
         keywords.clear();
         keywords.reserve(wordmap.size());
 
-        for (map<string, Word>::iterator itr = wordmap.begin(); itr != wordmap.end(); ++itr) {
-            unordered_map<string, double>::const_iterator cit = idfMap_.find(itr->first);
+        for (auto & itr : wordmap) {
+            auto cit = idfMap_.find(itr.first);
 
             if (cit != idfMap_.end()) {
-                itr->second.weight *= cit->second;
+                itr.second.weight *= cit->second;
             } else {
-                itr->second.weight *= idfAverage_;
+                itr.second.weight *= idfAverage_;
             }
 
-            itr->second.word = itr->first;
-            keywords.push_back(itr->second);
+            itr.second.word = itr.first;
+            keywords.push_back(itr.second);
         }
 
         topN = min(topN, keywords.size());
@@ -92,12 +109,14 @@ public:
         keywords.resize(topN);
     }
 private:
-    void LoadIdfDict(const string& idfPath) {
+    Error LoadIdfDict(const string& idfPath) {
         ifstream ifs(idfPath.c_str());
-        if(not ifs.is_open()){
-            return ;
+
+        if (!ifs.is_open()){
+            XLOG(ERROR) << "open " << idfPath << " failed";
+            return Error::OpenFileFailed;
         }
-        XCHECK(ifs.is_open()) << "open " << idfPath << " failed";
+
         string line ;
         vector<string> buf;
         double idf = 0.0;
@@ -108,40 +127,51 @@ private:
             buf.clear();
 
             if (line.empty()) {
-                XLOG(ERROR) << "lineno: " << lineno << " empty. skipped.";
+                XLOG(WARNING) << "lineno: " << lineno << " empty. skipped.";
                 continue;
             }
 
             Split(line, buf, " ");
 
             if (buf.size() != 2) {
-                XLOG(ERROR) << "line: " << line << ", lineno: " << lineno << " empty. skipped.";
+                XLOG(ERROR) << "line: " << line << ", lineno: " << lineno << " bad format. skipped.";
                 continue;
             }
 
-            idf = atof(buf[1].c_str());
+            idf = stod(buf[1], nullptr);
+            if (errno == ERANGE) {
+                XLOG(WARNING) << "failed to parse idf value from: " << lineno << ": " << buf[1];
+                return Error::ValueError;
+            }
             idfMap_[buf[0]] = idf;
             idfSum += idf;
-
         }
 
-        assert(lineno);
-        idfAverage_ = idfSum / lineno;
-        assert(idfAverage_ > 0.0);
+        if (lineno == 0) {
+            XLOG(ERROR) << "empty file.";
+            return Error::ValueError;
+        }
+        idfAverage_ = idfSum / (double)lineno;
+        return Error::Ok;
     }
-    void LoadStopWordDict(const string& filePath) {
+
+    Error LoadStopWordDict(const string& filePath) {
         ifstream ifs(filePath.c_str());
         if(not ifs.is_open()){
-            return ;
+            XLOG(ERROR) << "open " << filePath << " failed";
+            return Error::OpenFileFailed;
         }
-        XCHECK(ifs.is_open()) << "open " << filePath << " failed";
-        string line ;
 
+        string line ;
         while (getline(ifs, line)) {
             stopWords_.insert(line);
         }
 
-        assert(stopWords_.size());
+        if (stopWords_.empty()) {
+            XLOG(ERROR) << "empty file";
+            return Error::ValueError;
+        }
+        return Error::Ok;
     }
 
     static bool Compare(const Word& lhs, const Word& rhs) {
@@ -156,8 +186,8 @@ private:
 }; // class KeywordExtractor
 
 inline ostream& operator << (ostream& os, const KeywordExtractor::Word& word) {
-    return os << "{\"word\": \"" << word.word << "\", \"offset\": " << word.offsets << ", \"weight\": " << word.weight <<
-           "}";
+    return os << R"({"word": ")" << word.word << R"(", "offset": )"
+              << word.offsets << ", \"weight\": " << word.weight << "}";
 }
 
 } // namespace cppjieba
