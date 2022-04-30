@@ -27,8 +27,9 @@ struct HMMModel {
         emitProbVec.push_back(&emitProbS);
         LoadModel(modelPath);
     }
-    ~HMMModel() {
-    }
+
+    ~HMMModel() = default;
+
     void LoadModel(const string& filePath) {
         ifstream ifile(filePath.c_str());
         XCHECK(ifile.is_open()) << "open " << filePath << " failed";

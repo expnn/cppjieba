@@ -12,7 +12,7 @@ public:
     MixSegment(const DictTrie* dictTrie, const HMMModel* model)
         : mpSeg_(dictTrie), hmmSeg_(model) {
     }
-    ~MixSegment() {}
+    ~MixSegment() = default;
 
     virtual void Cut(RuneStrArray::const_iterator begin, RuneStrArray::const_iterator end, vector<WordRange>& res, bool hmm,
                      size_t) const override {

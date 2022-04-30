@@ -22,7 +22,7 @@ public:
           full_seg_(&dict_trie_),
           query_seg_(&dict_trie_, &model_),
           extractor(&dict_trie_, &model_, idfPath, stopWordPath){ }
-    ~Jieba() { }
+    ~Jieba() = default;
 
     void Cut(const string& sentence, vector<string>& words, bool hmm = true) const {
         mix_seg_.CutToStr(sentence, words, hmm);

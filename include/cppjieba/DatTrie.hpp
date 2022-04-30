@@ -1,6 +1,6 @@
 #pragma once
 
-#include <stdint.h>
+#include <cstdint>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -13,6 +13,7 @@
 #include "limonp/Md5.hpp"
 #include "Unicode.hpp"
 #include "darts-clone/include/darts.h"
+#include "Error.hpp"
 
 namespace cppjieba {
 
@@ -86,6 +87,9 @@ public:
         mmap_fd_ = -1;
     }
 
+    DatTrie(const DatTrie &) = delete;
+    DatTrie &operator=(const DatTrie &) = delete;
+
     const DatMemElem * Find(const string & key) const {
         JiebaDAT::result_pair_type find_result;
         dat_.exactMatchSearch(key.c_str(), find_result);
@@ -146,44 +150,54 @@ public:
         min_weight_ = d ;
     }
 
-    bool InitBuildDat(vector<DatElement>& elements, const string & dat_cache_file, const string & md5) {
-        BuildDatCache(elements, dat_cache_file, md5);
+    Error InitBuildDat(vector<DatElement>& elements, const string & dat_cache_file, const string & md5) {
+        auto status = BuildDatCache(elements, dat_cache_file, md5);
+        if (status != Error::Ok) {
+            return status;
+        }
         return InitAttachDat(dat_cache_file, md5);
     }
 
-    bool InitAttachDat(const string & dat_cache_file, const string & md5) {
+    Error InitAttachDat(const string & dat_cache_file, const string & md5) {
         mmap_fd_ = ::open(dat_cache_file.c_str(), O_RDONLY);
 
         if (mmap_fd_ < 0) {
-            return false;
+            return Error::OpenFileFailed;
         }
 
-        const auto seek_off = ::lseek(mmap_fd_, 0, SEEK_END);
-        assert(seek_off >= 0);
-        mmap_length_ = seek_off;
+        mmap_length_ = ::lseek(mmap_fd_, 0, SEEK_END);
+        if (mmap_length_ < sizeof(CacheFileHeader)) {
+            return Error::FileOperationError;
+        }
 
-        mmap_addr_ = reinterpret_cast<char *>(mmap(NULL, mmap_length_, PROT_READ, MAP_SHARED, mmap_fd_, 0));
-        assert(MAP_FAILED != mmap_addr_);
+        mmap_addr_ = reinterpret_cast<char *>(mmap(nullptr, mmap_length_, PROT_READ, MAP_SHARED, mmap_fd_, 0));
+        if (MAP_FAILED == mmap_addr_) {
+            return Error::MmapError;
+        }
 
-        assert(mmap_length_ >= sizeof(CacheFileHeader));
+        // assert(mmap_length_ >= sizeof(CacheFileHeader));
         CacheFileHeader & header = *reinterpret_cast<CacheFileHeader*>(mmap_addr_);
         elements_num_ = header.elements_num;
         min_weight_ = header.min_weight;
         assert(sizeof(header.md5_hex) == md5.size());
 
         if (0 != memcmp(&header.md5_hex[0], md5.c_str(), md5.size())) {
-            return false;
+            XLOG(ERROR) << "MD5 checksum failed for file: " << dat_cache_file;
+            return Error::ValueError;
         }
 
-        assert(mmap_length_ == sizeof(header) + header.elements_num * sizeof(DatMemElem)  + header.dat_size * dat_.unit_size());
+        if (mmap_length_ != sizeof(header) + header.elements_num * sizeof(DatMemElem) + header.dat_size * dat_.unit_size()) {
+            XLOG(ERROR) << "mmap length check failed. ";
+            return Error::ValueError;
+        }
         elements_ptr_ = (const DatMemElem *)(mmap_addr_ + sizeof(header));
         const char * dat_ptr = mmap_addr_ + sizeof(header) + sizeof(DatMemElem) * elements_num_;
         dat_.set_array(dat_ptr, header.dat_size);
-        return true;
+        return Error::Ok;
     }
 
 private:
-    void BuildDatCache(vector<DatElement>& elements, const string & dat_cache_file, const string & md5) {
+    Error BuildDatCache(vector<DatElement>& elements, const string & dat_cache_file, const string & md5) {
         std::sort(elements.begin(), elements.end());
 
         vector<const char*> keys_ptr_vec;
@@ -199,41 +213,62 @@ private:
         assert(sizeof(header.md5_hex) == md5.size());
         memcpy(&header.md5_hex[0], md5.c_str(), md5.size());
 
-        for (size_t i = 0; i < elements.size(); ++i) {
+        for (int i = 0; i < elements.size(); ++i) {
             keys_ptr_vec.push_back(elements[i].word.data());
             values_vec.push_back(i);
-            mem_elem_vec.push_back(DatMemElem());
+            mem_elem_vec.emplace_back();
             auto & mem_elem = mem_elem_vec.back();
             mem_elem.weight = elements[i].weight;
             mem_elem.SetTag(elements[i].tag);
         }
 
-        auto const ret = dat_.build(keys_ptr_vec.size(), &keys_ptr_vec[0], NULL, &values_vec[0]);
-        assert(0 == ret);
+        auto const ret = dat_.build(keys_ptr_vec.size(), &keys_ptr_vec[0], nullptr, &values_vec[0]);
+        if (0 != ret) {
+            XLOG(ERROR) << "Build double array trie error";
+            return Error::BuildTrieError;
+        }
         header.elements_num = mem_elem_vec.size();
         header.dat_size = dat_.size();
 
         {
             string tmp_filepath = string(dat_cache_file) + "_XXXXXX";
             ::umask(S_IWGRP | S_IWOTH);
-            const int fd =::mkstemp(&tmp_filepath[0]);
-            assert(fd >= 0);
-            ::fchmod(fd, 0644);
+            const int fd = ::mkstemp(&tmp_filepath[0]);
+            if (fd < 0) {
+                XLOG(ERROR) << "make temporary file failed";
+                return Error::OpenFileFailed;
+            }
+            auto st = ::fchmod(fd, 0644);
+            if (st != 0) {
+                XLOG(ERROR) << "change temporary file mode to 0644 failed. Please check permission";
+                return Error::FileOperationError;
+            }
 
             auto write_bytes = ::write(fd, (const char *)&header, sizeof(header));
             write_bytes += ::write(fd, (const char *)&mem_elem_vec[0], sizeof(mem_elem_vec[0]) * mem_elem_vec.size());
             write_bytes += ::write(fd, dat_.array(), dat_.total_size());
 
-            assert(write_bytes == sizeof(header) + mem_elem_vec.size() * sizeof(mem_elem_vec[0]) + dat_.total_size());
-            ::close(fd);
+            // assert(write_bytes == sizeof(header) + mem_elem_vec.size() * sizeof(mem_elem_vec[0]) + dat_.total_size());
+            if (write_bytes != sizeof(header) + mem_elem_vec.size() * sizeof(mem_elem_vec[0]) + dat_.total_size()) {
+                XLOG(ERROR) << "check written data size failed. ";
+                return Error::FileOperationError;
+            }
+            st = ::close(fd);
+            if (st != 0) {
+                XLOG(ERROR) << "Closing " << tmp_filepath << " failed";
+                return Error::FileOperationError;
+            }
 
             const auto rename_ret = ::rename(tmp_filepath.c_str(), dat_cache_file.c_str());
-            assert(0 == rename_ret);
+            if (0 != rename_ret) {
+                XLOG(ERROR) << "rename " << tmp_filepath << " to " << dat_cache_file << " failed. ";
+                return Error::FileOperationError;
+            }
         }
+
+        return Error::Ok;
     }
 
-    DatTrie(const DatTrie &);
-    DatTrie &operator=(const DatTrie &);
 
 private:
     JiebaDAT dat_;
@@ -247,32 +282,39 @@ private:
 };
 
 
-inline string CalcFileListMD5(const string & files_list, size_t & file_size_sum) {
+inline Error CalcFileListMD5(const vector<string>& files, size_t& file_size_sum, string& md5sum) {
     limonp::MD5 md5;
-
-    const auto files = limonp::Split(files_list, "|;");
     file_size_sum = 0;
 
     for (auto const & local_path : files) {
         const int fd = ::open(local_path.c_str(), O_RDONLY);
-        if( fd < 0){
-            continue;
+        if (fd < 0) {
+            XLOG(ERROR) << "failed to open " << local_path;
+            return Error::OpenFileFailed;
         }
         auto const len = ::lseek(fd, 0, SEEK_END);
         if (len > 0) {
-            void * addr = ::mmap(NULL, len, PROT_READ, MAP_SHARED, fd, 0);
-            assert(MAP_FAILED != addr);
+            void * addr = ::mmap(nullptr, len, PROT_READ, MAP_SHARED, fd, 0);
+            if (MAP_FAILED == addr) {
+                XLOG(ERROR) << "mmap for " << local_path << " failed";
+                return Error::MmapError;
+            };
 
             md5.Update((unsigned char *) addr, len);
             file_size_sum += len;
 
-            ::munmap(addr, len);
+            auto st = ::munmap(addr, len);
+            if (st != 0) {
+                XLOG(ERROR) << "munmap for " << local_path << " failed";
+                return Error::MmapError;
+            }
         }
         ::close(fd);
     }
 
     md5.Final();
-    return string(md5.digestChars);
+    md5sum = md5.digestChars;
+    return Error::Ok;
 }
 
 }
